@@ -160,7 +160,7 @@ In the rest of this chapter (and indeed, through much of the book), we look ata 
 ** These are applied to PCollections to create new PCollections.PTransforms may perform element-wise transformations, they maygroup/aggregate multiple elements together, or they may be a composite combination of other PTransforms.
 
 <code>
-  PCollection<String> raw = IO.read(...); \
-  PCollection<KV<Team, Integer>> input = raw.apply(new ParseFn()); \
+  PCollection<String> raw = IO.read(...); <\br>
+  PCollection<KV<Team, Integer>> input = raw.apply(new ParseFn()); <\br>
   PCollection<KV<Team, Integer>> totals =  input.apply(Sum.integersPerKey());
 </code>
