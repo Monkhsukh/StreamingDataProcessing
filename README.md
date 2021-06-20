@@ -136,6 +136,7 @@ The transformations applied in classic batch processing answer the question:“W
 In the rest of this chapter (and indeed, through much of the book), we look ata single example: computing keyed integer sums over a simple datasetconsisting of nine values. Let’s imagine that we’ve written a team-basedmobile game and we want to build a pipeline that calculates team scores bysumming up the individual scores reported by users’ phones. If we were tocapture our nine example scores in a SQL table named “UserScores,” it mightlook something like this:
 
 | Name  | Team  | Score | EventTime | ProcTime |
+|----|---|---|---|---|
 | Julie | TeamX |     5 |  12:00:26 | 12:05:19 |
 | Frank | TeamX |     9 |  12:01:26 | 12:08:19 |
 | Ed    | TeamX |     7 |  12:02:26 | 12:05:39 |
