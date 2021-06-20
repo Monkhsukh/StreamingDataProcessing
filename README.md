@@ -133,3 +133,9 @@ the structure of answering four questions, all of which I propose are critical t
 ### What: Transformations
 The transformations applied in classic batch processing answer the question:“What results are calculated?”
 
+In the rest of this chapter (and indeed, through much of the book), we look ata single example: computing keyed integer sums over a simple datasetconsisting of nine values. Let’s imagine that we’ve written a team-basedmobile game and we want to build a pipeline that calculates team scores bysumming up the individual scores reported by users’ phones. If we were tocapture our nine example scores in a SQL table named “UserScores,” it mightlook something like this:
+
+------------------------------------------------| Name  | Team  | Score | EventTime | ProcTime |------------------------------------------------| Julie | TeamX |     5 |  12:00:26 | 12:05:19 || Frank | TeamX |     9 |  12:01:26 | 12:08:19 || Ed    | TeamX |     7 |  12:02:26 | 12:05:39 || Julie | TeamX |     8 |  12:03:06 | 12:07:06 || Amy   | TeamX |     3 |  12:03:39 | 12:06:13 |2
+| Fred  | TeamX |     4 |  12:04:19 | 12:06:39 || Naomi | TeamX |     3 |  12:06:39 | 12:07:19 || Becky | TeamX |     8 |  12:07:26 | 12:08:39 || Naomi | TeamX |     1 |  12:07:46 | 12:09:00 |------------------------------------------------
+
+
