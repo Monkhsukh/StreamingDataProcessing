@@ -102,5 +102,34 @@ Properties:
 Good points aside, there is one very big downside to processing-timewindowing: if the data in question have event times associated with them,those data must arrive in event-time order if the processing-time windows areto reflect the reality of when those events actually happened.
 
 #### Windowing by event time
+Event-time windowing is what you use when you need to observe a datasource in finite chunks that reflect the times at which those events actually happened.
+if these data hadbeen windowed into processing-time windows for a use case that cared aboutevent times, the calculated results would have been incorrect. As you would expect, event-time correctness is one nice thing about using event-time windows.
 
+##### Drawbacks
+* Buffering 
+** Due to extended window lifetimes, more buffering of data is required.Thankfully, persistent storage is generally the cheapest of the resourcetypes most data processing systems depend on. As such, this problem is typicallymuch less of a concern than you might think when using any well-designed data processing system with strongly consistent persistent stateand a decent in-memory caching layer. Also, many useful aggregationsdo not require the entire input set to be buffered (e.g., sum or average),but instead can be performed incrementally, with a much smaller,intermediate aggregate stored in persistent state.
+* Completeness
+** Given that we often have no good way of knowing when we’ve seen allof the data for a given window, how do we know when the results for thewindow are ready to materialize? But for cases in which absolute correctness isparamount (again, think billing), the only real option is to provide a wayfor the pipeline builder to express when they want results for windows tobe materialized and how those results should be refined over time.
+
+# Chapter 2. The What, Where,When, and Howof Data Processing
+which covers in detail the core concepts of robust stream processingover out-of-order data, each analyzed within the context of aconcrete running example and with animated diagrams to highlightthe dimension of time.
+
+we’re now going to look closely at three more:
+
+* Triggers
+** A trigger is a mechanism for declaring when the output for a windowshould be materialized relative to some external signal. Triggers provideflexibility in choosing when outputs should be emitted. In some sense,you can think of them as a flow control mechanism for dictating whenresults should be materialized. Another way of looking at it is thattriggers are like the shutter-release on a camera, allowing you to declarewhen to take a snapshots in time of the results being computed.
+* Watermarks
+** A watermark is a notion of input completeness with respect to eventtimes. A watermark with value of time X makes the statement: “all inputdata with event times less than X have been observed.” As such,watermarks act as a metric of progress when observing an unboundeddata source with no known end.
+* Accumulation
+** An accumulation mode specifies the relationship between multiple resultsthat are observed for the same window. Those results might becompletely disjointed; that is, representing independent deltas over time,or there might be overlap between them.
+
+the structure of answering four questions, all of which I propose are critical toevery unbounded data processing problem:
+* **What** results are calculated? This question is answered by the typesof transformations within the pipeline. This includes things likecomputing sums, building histograms, training machine learningmodels, and so on. It’s also essentially the question answered byclassic batch processing
+* **Where** in event time are results calculated? This question isanswered by the use of event-time windowing within the pipeline.This includes the common examples of windowing from Chapter 1(fixed, sliding, and sessions); use cases that seem to have no notionof windowing (e.g., time-agnostic processing; classic batchprocessing also generally falls into this category); and other, morecomplex types of windowing, such as time-limited auctions. Alsonote that it can include processing-time windowing, as well, if youassign ingress times as event times for records as they arrive at the system.
+* **When** in processing time are results materialized? This question isanswered by the use of triggers and (optionally) watermarks. Thereare infinite variations on this theme, but the most common patternsare those involving repeated updates (i.e., materialized viewsemantics), those that utilize a watermark to provide a single outputper window only after the corresponding input is believed to be complete.
+* **How** do refinements of results relate? This question is answered bythe type of accumulation used: discarding (in which results are allindependent and distinct), accumulating (in which later results buildupon prior ones), or accumulating and retracting (in which both the accumulating value plus a retraction for the previously triggeredvalue(s) are emitted).
+
+## Batch Foundations: What and Where
+### What: Transformations
+The transformations applied in classic batch processing answer the question:“What results are calculated?”
 
