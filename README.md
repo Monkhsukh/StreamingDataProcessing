@@ -147,3 +147,21 @@ In the rest of this chapter (and indeed, through much of the book), we look ata 
 | Becky | TeamX |     8 |  12:07:26 | 12:08:39 |
 | Naomi | TeamX |     1 |  12:07:46 | 12:09:00 |
 
+* ScoreThe 
+** individual user score associated with this event
+* EventTime 
+** The event time for the score; that is, the time at which the score occurred
+* ProcTime
+** The processing for the score; that is, the time at which the score wasobserved by the pipeline
+
+* PCollections
+** These represent datasets (possibly massive ones) across which parallel transformations can be performed (hence the “P” at the beginning of thename)
+* PTransforms 
+** These are applied to PCollections to create new PCollections.PTransforms may perform element-wise transformations, they maygroup/aggregate multiple elements together, or they may be a composite combination of other PTransforms.
+
+``
+PCollection<String> raw = IO.read(...);
+PCollection<KV<Team, Integer>> input = raw.apply(new ParseFn());
+PCollection<KV<Team, Integer>> totals =  input.apply(Sum.integersPerKey());
+
+``
