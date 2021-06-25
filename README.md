@@ -154,6 +154,8 @@ In the rest of this chapter (and indeed, through much of the book), we look ata 
 * ProcTime
 ** The processing for the score; that is, the time at which the score wasobserved by the pipeline
 
+Preceding each example is a short snippet of Apache Beam Java SDKpseudocode to make the definition of the pipeline more concrete.
+
 * PCollections
 ** These represent datasets (possibly massive ones) across which parallel transformations can be performed (hence the “P” at the beginning of thename)
 * PTransforms 
@@ -164,3 +166,5 @@ In the rest of this chapter (and indeed, through much of the book), we look ata 
   PCollection<KV<Team, Integer>> input = raw.apply(new ParseFn()); 
   PCollection<KV<Team, Integer>> totals =  input.apply(Sum.integersPerKey());
 ```
+
+
