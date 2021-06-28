@@ -449,4 +449,285 @@ there are two methods that you can use to achieve processing-time windowing:
 * Ingress time
 ** Assign ingress times as the event times for data as they arrive, and use normal event-time windowing from there on. This is essentially what something like Spark Streaming 1.x does.
 
+### Processing-Time Windowing via Triggers
+There are three aspects to making processing-time “windowing” work in this manner:
+
+* Windowing 
+** We use the global event-time window because we’re essentially emulating processing-time windows with event-time panes.
+* Triggering
+** We trigger periodically in the processing-time domain based on the desired size of the processing-time windows.
+* We use discarding mode to keep the panes independent from one another,thus letting each of them act like an independent processing-time“window.”
+
+Figure 4-3.
+
+### Processing-Time Windowing via Ingress Time
+Lastly, let’s look at processing-time windowing achieved by mapping the event times of input data to their ingress times. Code-wise, there are four aspects worth mentioning here:
+
+* Time-shifting 
+** When elements arrive, their event times need to be overwritten with the time of ingress. We can do this in Beam by providing a new DoFn that sets the timestamp of the element to the current time via theoutputWithTimestamp method.
+* Windowing
+** Return to using standard event-time fixed windowing.
+* Triggering
+** Because ingress time affords the ability to calculate a perfect watermark,we can use the default trigger, which in this case implicitly fires exactly once when the watermark passes the end of the window.
+* Accumulation mode
+** Because we only ever have one output per window, the accumulation mode is irrelevant.
+
+Because perfect watermarks are possible when using ingress time,the actual watermark matches the ideal watermark, ascending up and to the right with a slope of one.
+
+Note that the two methods are more or less equivalent, although they differ slightly in the case of multistage pipelines: in the triggers version, multistage pipeline will slice the processing-time “windows” independently at each stage, so, for example, data in window N for one stage might instead end up in window N–1 or N+1 in the following stage; in the ingress-timeversion, after a datum is incorporated into window N, it will remain in window N for the duration of the pipeline due to synchronization of progress between stages via watermarks (in the Cloud Dataflow case), microbatch boundaries (in the Spark Streaming case), or whatever other coordinating factor is involved at the engine level.
+
+As I’ve noted to death, the big downside of processing-time windowing is that the contents of the windows change when the observation order of the inputs changes
+
+### Where: Session Windows
+
+Now we’re going to look at one of my favorite features: the dynamic, data-driven windows called sessions.
+
+Sessions are a special type of window that captures a period of activity in the data that is terminated by a gap of inactivity. They’re particularly useful in data analysis because they can provide a view of the activities for a specific user over a specific period of time during which they were engaged in some activity. This allows for the correlation of activities within the session,drawing inferences about levels of engagement based on the lengths of the sessions and so on.
+
+From a windowing perspective, sessions are particularly interesting in two ways:
+* They are an example of a data-driven window: the location and sizes of the windows are a direct consequence of the input data themselves, rather than being based on some predefined pattern within time, as are fixed and sliding windows.
+* They are also an example of an unaligned window; that is, a window that does not apply uniformly across the data, but instead only to specific subset of the data (e.g., per user). This is in contrast to align windows like fixed and sliding windows, which typically apply uniformly across the data.
+
+Figure 4-5.
+They key insight in providing general session support is that a complete session window is, by definition, a composition of a set of smaller,overlapping windows, each containing a single record, with each record in the sequence separated from the next by a gap of inactivity no larger than a predefined timeout. Thus, even if we observe the data in the session out of order, we can build up the final session simply by merging together any overlapping windows for individual data as they arrive.
+
+To look at this another way, consider the example we’ve been using so far. Ifwe specify a session timeout of one minute, we would expect to identify two sessions in the data, delineated in Figure 4-6 by the dashed black lines. Each Of those sessions captures a burst of activity from the user, with each event in the session separate by less than one minute from at least one other event in the session.
+
+* Custom Windows
+* Unaligned windows
+
+* Assignment 
+** Each element is initially placed into a proto-session window that begins at the element’s timestamp and extends for the gap duration.
+* Merging
+** At grouping time, all eligible windows are sorted, after which any overlapping windows are merged together.
+
+
+# Chapter 6. Exactly-Once and Side effects
+
+Streaming systems often talk about exactly-once processing; that is, ensuring that every record is processed exactly one time
+
+## Why Exactly Once Matters
+It almost goes without saying that for many users, any risk of dropped records or data loss in their data processing pipelines is unacceptable. Evenso, historically many general-purpose streaming systems made no guarantees about record processing—all processing was “best effort” only. Other Systems provided at-least-once guarantees, ensuring that records were always processed at least once, but records might be duplicated (and thus result in inaccurate aggregations); in practice, many such at-least-once systems performed aggregations in memory, and thus their aggregations could still be lost when machines crashed. These systems were used for low-latency,speculative results but generally could guarantee nothing about the veracity of these results.
+
+Evenso, historically many general-purpose streaming systems made no guarantees about record processing—all processing was “best effort” only. Other Systems provided at-least-once guarantees, ensuring that records were always processed at least once, but records might be duplicated (and thus result in inaccurate aggregations); in practice, many such at-least-once systems performed aggregations in memory, and thus their aggregations could still be lost when machines crashed. These systems were used for low-latency,speculative results but generally could guarantee nothing about the veracity of these results.
+
+### Accuracy Versus Completeness
+Whenever a Beam pipeline processes a record for a pipeline, we want to ensure that the record is never dropped or duplicated. However, the nature of streaming pipelines is such that records sometimes show up late, after aggregates for their time windows have already been processed. The BeamSDK allows the user to configure how long the system should wait for latedata to arrive; any (and only) records arriving later than this deadline are dropped. This feature contributes to completeness, not to accuracy: all records that showed up in time for processing are accurately processed exactly once,whereas these late records are explicitly dropped.
+
+### Side effects
+One characteristic of Beam and Dataflow is that users inject custom code that is executed as part of their pipeline graph. Data Flow does not guarantee that this code is run only once per record, whether by the streaming or batch runner. It might run a given record through a user transform multiple times,or it might even run the same record simultaneously on multiple workers; this is necessary to guarantee at-least-once processing in the face of worker failures. Only one of these invocations can “win” and produce output further down the pipeline.
+
+As a result, non idempotent side effects are not guaranteed to execute exactly once; if you write code that has side effects external to the pipeline, such as contacting an outside service, these effects might be executed more than once for a given record. This situation is usually unavoidable because there is no way to atomically commit Dataflow’s processing with the side effect on the external service. Pipelines do need to eventually send results to the outside world, and such calls might not be idempotent. As you will see later in thechapter, often such sinks are able to add an extra stage to restructure the callinto an idempotent operation first.
+
+This pipeline computes two different windowed aggregations. The first counts how many events came from each individual user over the course of a minute, and the second counts how many total events came in each minute.Both aggregations are written to unspecified streaming sinks.
+
+Remember that Dataflow executes pipelines on many different workers in parallel. After each GroupByKey (the Count operations use GroupByKeyunder the covers), all records with the same key are processed on the same machine following a process called shuffle. The Dataflow workers shuffle data between themselves using Remote Procedure Calls (RPCs), ensuring that records for a given key all end up on the same machine.
+
+Figure 5-1.
+
+The Count.perKey shuffles all the data for each user onto a given worker, whereas the Count.globally shuffles all these partial count to a single worker to calculate the global sum.
+
+For Dataflow to accurately process data, this shuffle process must ensure that every record is shuffled exactly once. As you will see in a moment, the distributed nature of shuffle makes this a challenging problem.
+
+This pipeline also both reads and writes data from and to the outside world,so Dataflow must ensure that this interaction does not introduce any inaccuracies. Dataflow has always supported this task—what Apache Sparkand Apache Flink call end-to-end exactly once—for sources and sinks whenever technically feasible.
+
+The focus of this chapter will be on three things:
+
+* Shuffle
+** How Dataflow guarantees that every record is shuffled exactly once.
+* Sources
+** How Dataflow guarantees that every source record is processed exactlyonce.
+* Sinks
+** How Dataflow guarantees that every sink produces accurate output.
+
+### Ensuring Exactly Once in Shuffle
+As just explained, Dataflow’s streaming shuffle uses RPCs. Now, any time you have two machines communicating via RPC, you should think long and hard about data integrity. First of all, RPCs can fail for many reasons. The Network might be interrupted, the RPC might time out before completing, or the receiving server might decide to fail the call. To guarantee that records are not lost in shuffle, Dataflow employs upstream backup. This simply means that the sender will retry RPCs until it receives positive acknowledgment of receipt. Dataflow also ensures that it will continueretrying these RPCs even if the sender crashes. This guarantees that every record is delivered at least once.
+
+Now, the problem is that these retries might themselves create duplicates.Most RPC frameworks, including the one Dataflow uses, provide the sender with a status indicating success or failure. In a distributed system, you need to be aware that RPCs can sometimes succeed even when they have appeared tofail. There are many reasons for this: race conditions with the RPC timeout,positive acknowledgment from the server failing to transfer even though theRPC succeeded, and so on. The only status that a sender can really trust is a successful one.
+
+An RPC returning a failure status generally indicates that the call might or might not have succeeded. Although specific error codes can communicate unambiguous failure, many common RPC failures, such as Deadline
+
+Exceeded, are ambiguous. In the case of streaming shuffle, retrying an RPCthat really succeeded means delivering a record twice! Dataflow needs some way of detecting and removing these duplicates.
+
+At a high level, the algorithm for this task is quite simple (see Figure 5-2):every message sent is tagged with a unique identifier. Each receiver stores acatalog of all identifiers that have already been seen and processed. Everytime a record is received, its identifier is looked up in this catalog. If it is found, the record is dropped as a duplicate. Because Data Flow is built on top of a scalable key/value store, this store is used to hold the deduplication catalog.
+
+### Addressing Determinism
+
+Making this strategy work in the real world requires a lot of care, however.One immediate wrinkle is that the Beam Model allows for user code to produce non deterministic output. This means that a ParDo can execute twice on the same input record (due to a retry), yet produce different output on each retry. The desired behavior is that only one of those outputs will commit into the pipeline; however, the nondeterminism involved makes it difficult to guarantee that both outputs have the same deterministic ID. Even trickier, aParDo can output multiple records, so each of these retries might produce a different number of outputs!
+
+Our experience is that in practice, many pipelines require nondeterministic transforms And all too often, pipeline authors do not realize that the code they wrote is nondeterministic.
+
+And even if the user code is purely deterministic, anyevent-time aggregation that allows for late data might have non deterministic inputs.
+
+Dataflow addresses this issue by using checkpointing to make non deterministic processing effectively deterministic. Each output from a transform is checkpointed, together with its unique ID, to stable storage before being delivered to the next stage. Any retries in the shuffle delivery simply replay the output that has been checkpointed—the user's nondeterministic code is not run again on retry. To put it another way, the user's code may be run multiple times but only one of those runs can “win.''Furthermore, Dataflow uses a consistent store that allows it to prevent duplicates from being written to stable storage.
+
+### Performance
+
+To implement exactly-once shuffle delivery, a catalog of record IDs is stored in each receiver key. For every record that arrives, Dataflow looks up thecatalog of IDs already seen to determine whether this record is a duplicate.Every output from step to step is checkpointed to storage to ensure that the generated record IDs are stable.However, unless implemented carefully, this process would significantly degrade pipeline performance for customers by creating a huge increase in reads and writes. Thus, for exact-once processing to be viable for Dataflowusers, that I/O has to be reduced, in particular by preventing I/O on every record.Data Flow achieves this goal via two key techniques: graph optimization and bloom filters.
+
+#### Graph Optimization
+
+The Dataflow service runs a series of optimizations on the pipeline graph before executing it. One such optimization is fusion, in which the servicefuses many logical steps into a single execution stage. Figure 5-3 shows some simple examples.
+
+All fused steps are run as an in-process unit, so there’s no need to store exactly-once data for each of them. In many cases, fusion reduces the entire graph down to a few physical steps, greatly reducing the amount of data transfer needed (and saving on state usage, as well).
+
+#### Bloom filters
+
+In a healthy pipeline, most arriving records will not be duplicates. We can use that fact to greatly improve performance via Bloom filters, which are compact data structures that allow for quick set-membership checks. Bloom Filters have a very interesting property: they can return false positives but never false negatives. If the filter says “Yes, the element is in the set,” we know that the element is probably in the set (with a probability that can be calculated). However, if the filter says an element is not in the set, it definitely isn’t. This function is a perfect fit for the task at hand.
+
+The implementation in Dataflow works like this: each worker keeps a Bloom Filter of every ID it has seen. Whenever a new record ID shows up, it looks it up in the filter. If the filter returns false, this record is not a duplicate and the worker can skip the more expensive lookup from stable storage. It needs to do that second lookup only if the Bloom filter returns true, but as long as thefilter’s false-positive rate is low, that step is rarely needed.
+
+Bloom filters tend to fill up over time, however, and as that happens, the false-positive rate increases. We also need to construct this Bloom filter anew any time a worker restarts by scanning the ID catalog stored in state.Helpfully, Dataflow attaches a system timestamp to each record. Thus,instead of creating a single Bloom filter, the service creates a separate one for every 10-minute range. When a record arrives, Dataflow queries the appropriate filter based on the system timestamp. This step prevents theBloom filters from saturating because filters are garbage-collected over time,and it also bounds the amount of data that needs to be scanned at startup.
+
+#### Garbage Collection
+
+Every Dataflow worker persistently stores a catalog of unique record IDs it has seen. As Dataflow’s state and consistency model is per-key, in reality each key stores a catalog of records that have been delivered to that key. Wecan’t stop these identifiers forever, or all available storage will eventually fill up. To avoid that issue, you need garbage collection of acknowledged recordIDs.
+
+One strategy for accomplishing this goal would be for senders to tag each record with a strictly increasing sequence number in order to track the earliest sequence number still in flight (corresponding to an unacknowledged record delivery). Any identifier in the catalog with an earlier sequence number could then be garbage-collected because all earlier records have already been acknowledged.
+
+There is a better alternative, however. As previously mentioned, Dataflowalready tags each record with a system timestamp that is used for bucketing exactly-once Bloom filters. Consequently, instead of using sequence numbers to garbage-collect the exactly-once catalog, Dataflow calculates a garbage-collection watermark based on these system timestamps (this is the processing-time watermark discussed in Chapter 3). A nice side benefit of this approach is that because this watermark is based on the amount of physical time spent waiting in a given stage (unlike the data watermark,which is based on custom event times), it provides intuition on what parts of the pipeline are slow. This metadata is the basis for the System Lag metrics shown in the Dataflow WebUI.
+
+### Exactly Once in Sources
+Beam provides a source API for reading data into a Dataflow pipeline.Data Flow might retry reads from a source if processing fails and needs to ensure that every unique record produced by a source is processed exactly once.
+
+For most sources Dataflow handles this process transparently; such sources are deterministic. For example, consider a source that reads data out of files.The records in a file will always be in a deterministic order and deterministic byte locations, no matter how many times the file is read. The Filename and byte location uniquely identify each record, so the service can automatically generate unique IDs for each record. Another source that provides similar determinism guarantees is Apache Kafka; each Kafka topic is divided into a static set of partitions, and records in a partition always have a deterministic order. Such deterministic sources will work seamlessly inDataflow with no duplicates.
+
+### Exactly Once in Sinks
+At some point, every pipeline needs to output data to the outside world, and a sink is simply a transform that does exactly that. Keep in mind that delivering data externally is a side effect, and we have already mentioned that Dataflowdoes not guarantee exactly-once application of side effects. So, how can a sink guarantee that outputs are delivered exactly once?
+
+The simplest answer is that a number of built-in sinks are provided as part of the Beam SDK. These sinks are carefully designed to ensure that they do not produce duplicates, even if executed multiple times. Whenever possible,pipeline authors are encouraged to use one of these built-in sinks.
+
+However, sometimes the built-ins are insufficient and you need to write your own. The best approach is to ensure that your side-effect operation is idempotent and therefore robust in the face of replay. However, often some component of a side-effect DoFn is nondeterministic and thus might change on replay. For example, in a windowed aggregation, the set of records in the window can also be nondeterministic!
+
+There are other ways nondeterminism can be introduced. The standard way to address this risk is to rely on the fact that Dataflow currently guarantees that only one version of a DoFn’s output can make it past a shuffle boundary.
+
+A simple way of using this guarantee is via the built-in Reshuffle transform.The pattern presented in Example 5-2 ensures that the side-effect operation always receives a deterministic record to output,
+
+The preceding pipeline splits the sink into two steps: PrepareOutputDataand WriteToSideEffect. PrepareOutputData outputs records corresponding to idempotent writes. If we simply ran one after the other, the entire process might be replayed on failure, PrepareOutputData might produce a different result, and both would be written as side effects. Whenwe add the Reshuffle in between the two, Dataflow guarantees this can't happen.
+
+Of course, Data Flow might still run the WriteToSideEffect operation multiple times. The side effects themselves still need to be idempotent, or the sink will receive duplicates. For example, an operation that sets or overwrites a value in a data store is idempotent, and will generate correct output even if it's run several times. An operation that appends to a list is not idempotent; if the operation is run multiple times, the same value will be appended each time.
+
+While Reshuffle provides a simple way of achieving stable input to a DoFn,a GroupByKey works just as well. However, there is currently a proposal that removes the need to add a GroupByKey to achieve stable input into a DoFn.Instead, the user could annotateWriteToSideEffect with a special annotation, @RequiresStableInput, and the system would then ensure stable input to that transform.
+
+# Chapter 6. Streams and Tables
+
+## Stream and Table Basics
+The basic idea of streams and tables derives from the database world. Anyone Familiar with SQL is likely familiar with tables and their core properties,roughly summarized as: tables contain rows and columns of data, and eachrow is uniquely identified by some sort of key, either explicit or implicit.
+
+If you think back to your database systems class in college, you’ll probably recall the data structure underlying most databases is an append-only log. Transactions are applied to a table in the database, those transactions are recorded in a log, the contents of which are then serially applied to the table to materialize those updates. In streams and tables nomenclature, that log is effectively the stream,
+
+From that perspective, we now understand how to create a table from astream: the table is just the result of applying the transaction log of updates found in the stream. But how to do we create a stream from a table? It's Essentially the inverse: a stream is a changelog for a table. The motivating example typically used for table-to-stream conversion is materialized views.Materialized views in SQL let you specify a query on a table, which itself is then manifested by the database system as another first-class table. Thismaterialized view is essentially a cached version of that query, which the database system ensures is always up to date as the contents of the sourcetable evolve over time. Perhaps unsurprisingly, materialized views are implemented via the changelog for the original table; any time the source table changes, that change is logged. The database then evaluates that change within the context of the materialized view’s query and applies any resulting change to the destination materialized view table.
+
+Combining these two points together and employing yet another questionable physics analogy, we arrive at what one might call the Special Theory ofStream and Table Relativity:
+* Streams → tables
+** The aggregation of a stream of updates over time yields a table.
+* Tables → streams
+** The observation of changes to a table over time yields a stream.
+
+
+#### General theory of stream and table
+* Tables are data at rest.
+** This isn’t to say tables are static in any way; nearly all useful tables are continuously changing over time in some way. But at any giventime, a snapshot of the table provides some sort of picture of the dataset contained together as a whole. In that way, tables act as a conceptual resting place for data to accumulate and be observed overtime. Hence, data at rest.
+* Streams are data in motion.
+** Whereas tables capture a view of the dataset as a whole at a specific point in time, streams capture the evolution of that data over time.Julian Hyde is fond of saying streams are like the derivatives of tables, and tables the integrals of streams, which is a nice way of thinking about it for you math-minded individuals out there.Regardless, the important feature of streams is that they capture the inherent movement of data within a table as it changes. Hence, data in motion.
+
+## Batch Processing VS Streams and Tables
+
+### A Streams and Tables Analysis of MapReduce
+To keep our analysis relatively simple, but solidly concrete, as it were, let's look at how a traditional MapReduce job fits into the streams/tables world.As alluded to by its name, a MapReduce job superficially consists of two phases: Map and Reduce. For our purposes, though, it’s useful to look a little deeper and treat it more like six:
+
+* MapRead
+** This consumes the input data and preprocesses them a bit into a standard key/value form for mapping.
+* Map
+** This repeatedly (and/or in parallel) consumes a single key/value pair from the preprocessed input and outputs zero or more key/value pairs.
+* MapWrite
+** This clusters together sets of Map-phase output values having identical keys and writes those key/value-list groups to (temporary) persistent storage. In this way, the MapWrite phase is essentially a group-by-key-and-checkpoint operation
+* ReduceRead
+** This consumes the saved shuffle data and converts them into a standard key/value-list form for reduction.
+* Reduce
+** This repeatedly (and/or in parallel) consumes a single key and its associated value-list of records and outputs zero or more records, all of which may optionally remain associated with that same key.
+* ReduceWrite
+** This writes the outputs from the Reduce phase to the output datastore.
+
+##### Map as streams/Tables
+ We look more closely at how the table is being converted into a stream later, but for now, suffice it to say that the MapRead phase is iterating over the data at rest in the input table and putting them into motion in the form of a stream that is then consumed by the Map phase.
+
+Next up, the Map phase consumes that stream, and then does what? Because The map operation is an element-wise transformation, it’s not doing anything that will halt the moving elements and put them to rest. It might change the effective cardinality of the stream by either filtering some elements out of exploding some elements into multiple elements, but those elements all remain independent from one another after the Map phase concludes. So, it seems safe to say that the Map phase both consumes a stream as well as produces a stream.
+
+After the Map phase is done, we enter the MapWrite phase. As I noted earlier, the MapWrite groups records by key and then writes them in that format to persistent storage. The persistent part of the write actually isn't strictly necessary at this point as long as there’s persistence somewhere (i.e.,if the upstream inputs are saved and one can recompute the intermediate results from them in cases of failure, similar to the approach Spark takes withResilient Distributed Datasets [RDDs]). What is important is that the records are grouped together into some kind of datastore, be it in memory, on disk, or what have you. This is important because, as a result of this grouping operation, records that were previously flying past one-by-one in the stream are now brought to rest in a location dictated by their key, thus allowing per-key groups to accumulate as their like-keyed brethren and sistren arrive. Notehow similar this is to the definition of stream-to-table conversion provided earlier: the aggregation of a stream of updates over time yields a table. TheMapWrite phase, by virtue of grouping the stream of records by their keys,has put those data to rest and thus converted the stream back into a table.
+
+We’ve gone from table to stream and back again across three operations.MapRead converted the table into a stream, which was then transformed into a new stream by Map (via the user’s code), which was then converted back into a table by MapWrite. We’re going to find that the next three operations in the MapReduce look very similar, so I’ll go through them more quickly,but I still want to point out one important detail along the way
+
+##### Reduce as streams/tables
+
+It’s basically identical to MapRead, except that the values being read are singleton lists of values instead of singleton values,because the data stored by MapWrite were key/value-list pairs. But it’s still just iterating over a snapshot of a table to convert it into a stream. Nothing New here.
+
+ReduceWrite is the one that’s a bit noteworthy. We know already that thisphase must convert a stream to a table, given that Reduce produces a stream and the final output is a table. But how does that happen? If I told you it was a direct result of key-grouping the outputs from the previous phase into persistent storage, just like we saw with MapWrite, you might believe me,until you remembered that I noted earlier that key-association was an optional feature of the Reduce phase. With that feature enabled, ReduceWriteis essentially identical to MapWrite. But if that feature is disabled and the outputs from Reduce have no associated keys, what exactly is happening to bring those data to rest?
+
+Taken from this perspective, it’s easy to see that stream/table theory isn't remotely at odds with batch processing of bounded data. In fact, it only further supports the idea I’ve been harping on that batch and streaming really aren't that different: at the end of the day, it’s streams and tables all the way down.
+
+### What, Where, When, and How in a Streams andTables World
+
+#### What: Transformations
+
+* Map and Reduce both applied the pipeline author’s element-wise transformation on each key/value or key/value-list pair in the inputstream, respectively, yielding a new, transformed stream.
+* MapWrite and ReduceWrite both grouped the outputs from the previous stage according to the key assigned by that stage (possibly implicitly, in the optional Reduce case), and in doing so transformed the input stream into an output table.
+
+Viewed in that light, you can see that there are essentially two types of whattransforms from the perspective of stream/table theory:
+
+* Non Grouping
+** These operations (as we saw in Map and Reduce) simply accept a stream of records and produce a new, transformed stream of records on the other side. Examples of non grouping transformations are filters (e.g., removing spam messages), exploders (i.e., splitting apart a larger composite record into its constituent parts), and mutators (e.g., divide by 100), and so on
+* Grouping
+** These operations (as we saw in MapWrite and ReduceWrite) accept astream of records and group them together in some way, thereby transforming the stream into a table. Examples of grouping transformations are joins, aggregations, list/set accumulation, changelog application, histogram creation, machine learning model training, and so forth.
+
+This is exactly the point being made by the folks championing stream processors as a database (primarily the Kafka and Flink crews): anywhere you have a grouping operation in your pipeline, you’re creating a table that includes what is effectively the output values of that portion of the stage. If Those output values happen to be the final thing your pipeline is calculating,you don’t need to dematerialize them somewhere else if you can read them directly out of that table. Besides providing quick and easy access to results as they evolve over time, this approach saves on compute resources by not requiring an additional sink stage in the pipeline to materialize the outputs,yields disk savings by eliminating redundant data storage, and obviates the need for any engineering work building the aforementioned sink stages. The Only major caveat is that you need to take care to ensure that only the data processing pipeline has the ability to make modifications to the table. If the values in the table can change out from under the pipeline due to external modification, all bets are off regarding consistency guarantees.
+
+#### Where: Windowing
+
+
+Combined with our earlier experiences, we can thus also infer it must play a role in stream-to-table conversion because grouping is what drives table creation. There are really two aspects of windowing that interact with stream/table theory:
+
+* Window assignment
+** This effectively just means placing a record into one or more windows.
+* Window merging
+** This is the logic that makes dynamic, data-driven types of windows, such as sessions, possible.
+
+The effect of window assignment is quite straightforward. When a record is conceptually placed into a window, the definition of the window is essentially combined with the user-assigned key for that record to create an implicit composite key used at grouping time. Simple.
+
+As you might expect, this looks remarkably similar to Figure 6-4, but with four groupings in the table (corresponding to the four windows occupied by the data) instead of just one. But as before, we must wait until the end of our bounded input is reached before emitting results. We look at how to address this for unbounded data in the next section, but first let’s touch briefly on merging windows.
+
+##### Window merging
+Moving on to merging, we’ll find that the effect of window merging is more complicated than window assignment, but still straightforward when you think about the logical operations that would need to happen. When grouping a stream into windows that can merge, that grouping operation has to take into account all of the windows that could possibly merge together.Typically, this is limited to windows whose data all have the same key(because we’ve already established that windowing modifies grouping to not be just by key, but also key and window). For this reason, the system doesn't really treat the key/window pair as a flat composite key, but rather as a hierarchical key, with the user-assigned key as the root, and the window a child component of that root. When it comes time to actually group data together, the system first groups by the root of the hierarchy (the key assigned by the user). After the data have been grouped by key, the system can then proceed with grouping by window within that key (using the child components of the hierarchical composite keys). This act of grouping by window is where window merging happens.
+
+##### When: triggers
+We learned in Chapter 3 that we use triggers to dictate when the contents of a window will be materialized (with watermarks providing a useful signal on input completeness for certain types of triggers). After data have been grouped together into a window, we use triggers to dictate when that data should be sent downstream. In streams/tables terminology, we understand that grouping means stream-to-table conversion. From there, it’s a relatively small leap to see that triggers are the complement to grouping; in other words, that “ungrouping” operation we were grasping for earlier. Triggers are what drive table-to-stream conversion.
+
+##### How: Accumulation
+in Chapter 2, we learned that the three accumulation modes (discarding,accumulating, accumulating and retracting) tell us how refinements of results relate when a window is triggered multiple times over the course of itslife. Fortunately, the relationship to streams and tables here is pretty straightforward:
+
+* Discarding mode requires the system to either throw away the previous value for the window when triggering or keep around a copy of the previous value and compute the delta the next time the window triggers. (This mode might have better been called Deltamode.)
+* Accumulating mode requires no additional work; the current value of the window in the table at triggering time is what is emitted.(This mode might have better been called Value mode.)
+* Accumulating and retracting mode requires keeping around copies of all previously triggered (but not yet retracted) values for the window. This list of previous values can grow quite large in the case of merging windows live sessions, but is vital to cleanly reversing the effects of those previous trigger firings in cases where the newvalue cannot simply be used to overwrite a previous value. (Thismode might have better been called Value and Retractions mode.)
+
+### General Theory of Stream and Table Relativity
+
+* Data processing pipelines (both batch and streaming) consist of tables, streams, and operations upon those tables and streams.
+* Tables are data at rest, and act as a container for data to accumulate and be observed over time.
+* Streams are data in motion, and encode a discretized view of the evolution of a table over time.
+* Operations act upon a stream or table and yield a new stream portable. They are categorized as follows:
+* stream → stream: Nongrouping (element-wise) operations
+* Applying non grouping operations to a stream alters the data in the stream while leaving them in motion, yielding a newstream with possibly different cardinality.
+* stream → table: Grouping operations
+* Grouping data within a stream brings those data to rest,yielding a table that evolves over time.
+* Windowing incorporates the dimension of eventtime into such groupings
+* Merging windows dynamically combine over time,allowing them to reshape themselves in response to the data observed and dictating that key remain the unit of atomicity/parallelization, with window being a child component of grouping within thatkey.
+* table → stream: Ungrouping (triggering) operations
+* Watermarks provide a notion of input completeness relative to event time, which is useful reference point when triggering event-time stamped data, particularly data grouped into event-time windows from unbounded streams.
+    * The accumulation mode for the trigger determines the nature of the stream, dictating whether it contains deltas or values, and whether retractions for previous deltas/values are provided.
+* table -> table:(none)
+    * There are no operations that consume a table and yield table, because it’s not possible for data to go from rest and back to rest without being put into motion. As a result, all modifications to a table are via conversion to a stream and back again
+
+What I love about these rules is that they just make sense. They have a very natural and intuitive feeling about them, and as a result they make it so much easier to understand how data flows (or don’t) through a sequence of operations. They codify the fact that data exist in one of two constitutions at any given time (streams or tables), and they provide simple rules for reasoning about the transitions between those states. They demystify windowing by showing how it’s just a slight modification of a thing everyone already innately understands: grouping. They highlight why grouping operations in general are always such a sticking point for streaming (because they bring data in streams to rest as tables) but also make it very clear what sorts of operations are needed to get things unstuck (triggers; i.e., ungrouping operations). And they underscore just how unified batch and stream processing really are, at a conceptual level.
+
+
 
